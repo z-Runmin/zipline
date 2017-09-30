@@ -33,7 +33,10 @@ from zipline.assets.continuous_futures import (
     OrderedContracts,
     delivery_predicate
 )
-from zipline.assets.roll_finder import VolumeRollFinder
+from zipline.assets.roll_finder import (
+    ROLL_DAYS_FOR_CURRENT_CONTRACT,
+    VolumeRollFinder,
+)
 from zipline.data.minute_bars import FUTURES_MINUTES_PER_DAY
 from zipline.errors import SymbolNotFound
 from zipline.testing.fixtures import (
@@ -299,7 +302,7 @@ class ContinuousFuturesTestCase(WithCreateBarData,
                 cross_loc_1 = dts.searchsorted('2016-02-09 23:01:00+00:00')
                 cross_loc_2 = dts.searchsorted('2016-02-11 23:01:00+00:00')
                 cross_loc_3 = dts.searchsorted('2016-02-15 23:01:00+00:00')
-                end_loc = dts.searchsorted('2016-03-15 23:01:00+00:00')
+                end_loc = dts.searchsorted('2016-03-16 23:01:00+00:00')
                 df.volume.values[:cross_loc_1] = 5
                 df.volume.values[cross_loc_1:cross_loc_2] = 15
                 df.volume.values[cross_loc_2:cross_loc_3] = 5
@@ -341,23 +344,23 @@ class ContinuousFuturesTestCase(WithCreateBarData,
             else:
                 self.assertEqual(contract.symbol, 'DFG16')
 
-        # TODO: This test asserts behavior about a back contract briefly
-        # spiking in volume, but more than a week before the front contract's
-        # auto close date, meaning it does not fall in the 'grace' period used
-        # by `VolumeRollFinder._active_contract`. The current behavior is that
-        # during the spike, the back contract is considered current, but it may
-        # be worth changing that behavior in the future.
-        # sessions = self.trading_calendar.sessions_in_range(
-        #     '2016-03-01', '2016-03-21',
-        # )
-        # for session in sessions:
-        #     bar_data = self.create_bardata(lambda: session)
-        #     contract = bar_data.current(cf, 'contract')
+        # This test asserts behavior about a back contract briefly spiking in
+        # volume, but more than a week before the front contract's auto close
+        # date, meaning it does not fall in the 'grace' period used by
+        # `VolumeRollFinder._active_contract`. Therefore we should not roll to
+        # the back contract and the front contract should remain current until
+        # its auto close date.
+        sessions = self.trading_calendar.sessions_in_range(
+            '2016-03-01', '2016-03-21',
+        )
+        for session in sessions:
+            bar_data = self.create_bardata(lambda: session)
+            contract = bar_data.current(cf, 'contract')
 
-        #     if session < pd.Timestamp('2016-03-16', tz='UTC'):
-        #         self.assertEqual(contract.symbol, 'DFG16')
-        #     else:
-        #         self.assertEqual(contract.symbol, 'DFH16')
+            if session < pd.Timestamp('2016-03-17', tz='UTC'):
+                self.assertEqual(contract.symbol, 'DFG16')
+            else:
+                self.assertEqual(contract.symbol, 'DFH16')
 
     def test_create_continuous_future(self):
         cf_primary = self.asset_finder.create_continuous_future(
@@ -507,7 +510,7 @@ class ContinuousFuturesTestCase(WithCreateBarData,
                          'the current contract.')
 
         bar_data = self.create_bardata(
-            lambda: pd.Timestamp('2016-02-26', tz='UTC'))
+            lambda: pd.Timestamp('2016-02-29', tz='UTC'))
         contract = bar_data.current(cf_primary, 'contract')
         self.assertEqual(contract.symbol, 'FOH16',
                          'Volume switch to FOH16, should have triggered roll.')
@@ -1289,7 +1292,7 @@ def record_current_contract(algo, data):
 class RollFinderTestCase(WithBcolzFutureDailyBarReader, ZiplineTestCase):
 
     START_DATE = pd.Timestamp('2017-01-03', tz='UTC')
-    END_DATE = pd.Timestamp('2017-04-21', tz='UTC')
+    END_DATE = pd.Timestamp('2017-05-23', tz='UTC')
 
     TRADING_CALENDAR_STRS = ('us_futures',)
     TRADING_CALENDAR_PRIMARY_CAL = 'us_futures'
@@ -1306,7 +1309,9 @@ class RollFinderTestCase(WithBcolzFutureDailyBarReader, ZiplineTestCase):
 
     @classmethod
     def make_futures_info(cls):
-        two_days = 2 * cls.trading_calendar.day
+        day = cls.trading_calendar.day
+        two_days = 2 * day
+        end_buffer_days = ROLL_DAYS_FOR_CURRENT_CONTRACT * day
 
         cls.first_end_date = pd.Timestamp('2017-01-20', tz='UTC')
         cls.second_end_date = pd.Timestamp('2017-02-17', tz='UTC')
@@ -1317,6 +1322,8 @@ class RollFinderTestCase(WithBcolzFutureDailyBarReader, ZiplineTestCase):
         cls.fourth_auto_close_date = cls.fourth_end_date + two_days
         cls.fifth_start_date = pd.Timestamp('2017-03-15', tz='UTC')
         cls.fifth_end_date = cls.END_DATE
+        cls.fifth_auto_close_date = cls.fifth_end_date - two_days
+        cls.last_start_date = cls.fourth_end_date
 
         return pd.DataFrame.from_dict(
             {
@@ -1357,7 +1364,43 @@ class RollFinderTestCase(WithBcolzFutureDailyBarReader, ZiplineTestCase):
                     'root_symbol': 'CL',
                     'start_date': cls.fifth_start_date,
                     'end_date': cls.fifth_end_date,
-                    'auto_close_date': cls.fifth_end_date - two_days,
+                    'auto_close_date': cls.fifth_auto_close_date,
+                    'exchange': 'CME',
+                },
+                1005: {
+                    'symbol': 'CLM17',
+                    'root_symbol': 'CL',
+                    'start_date': cls.last_start_date,
+                    'end_date': cls.END_DATE,
+                    'auto_close_date': cls.END_DATE + two_days,
+                    'exchange': 'CME',
+                },
+                1006: {
+                    'symbol': 'CLN17',
+                    'root_symbol': 'CL',
+                    'start_date': cls.last_start_date,
+                    'end_date': cls.END_DATE,
+                    'auto_close_date': cls.END_DATE + two_days,
+                    'exchange': 'CME',
+                },
+                2000: {
+                    # Using a placeholder month of 'A' to mean this is the
+                    # first contract in the chain.
+                    'symbol': 'FVA17',
+                    'root_symbol': 'FV',
+                    'start_date': cls.START_DATE,
+                    'end_date': cls.END_DATE + end_buffer_days,
+                    'auto_close_date': cls.END_DATE + two_days,
+                    'exchange': 'CME',
+                },
+                2001: {
+                    # Using a placeholder month of 'B' to mean this is the
+                    # second contract in the chain.
+                    'symbol': 'FVB17',
+                    'root_symbol': 'FV',
+                    'start_date': cls.START_DATE,
+                    'end_date': cls.END_DATE + end_buffer_days,
+                    'auto_close_date': cls.END_DATE + end_buffer_days,
                     'exchange': 'CME',
                 },
             },
@@ -1369,40 +1412,47 @@ class RollFinderTestCase(WithBcolzFutureDailyBarReader, ZiplineTestCase):
         """
         Volume data should look like this:
 
-                              CLF17    CLG17    CLH17    CLJ17    CLK17
-                2017-01-03     2000     1000        5        0        0
-                2017-01-04     2000     1000        5        0        0
-                    ...
-                2017-01-16     2000     1000        5        0        0
-                2017-01-17     2000     1000        5        0        0
-        ACD --> 2017-01-18     2000_    1000        5        0        0
-                2017-01-19     2000 `-> 1000        5        0        0
-                2017-01-20     2000     1000        5        0        0
-                2017-01-23        0     1000        5        0        0
-                    ...
-                2017-02-09        0     1000        5        0        0
-                2017-02-10        0     1000_    5000        0        0
-                2017-02-13        0     1000 `-> 5000        0        0
-                2017-02-14        0     1000     5000        0        0
-        ACD --> 2017-02-15        0     1000     5000        0        0
-                2017-02-16        0     1000     5000        0        0
-                2017-02-17        0     1000     5000        0        0
-                2017-02-20        0        0     5000        0        0
-                    ...
-                2017-03-10        0        0     5000        0        0
-                2017-03-13        0        0     5000     4000        0
-                2017-03-14        0        0     5000     4000        0
-        ACD --> 2017-03-15        0        0     5000_    4000     3000
-                2017-03-16        0        0     5000 `-> 4000     3000
-                2017-03-17        0        0     5000     4000     3000
-                2017-03-20        0        0        0     4000     3000
-                    ...
-                2017-04-14        0        0        0     4000     3000
-                2017-04-17        0        0        0     4000_    3000
-                2017-04-18        0        0        0        0 `-> 3000
-        ACD --> 2017-04-19        0        0        0        0     3000
-                2017-04-20        0        0        0        0     3000
-                2017-04-21        0        0        0        0     3000
+                     CLF17    CLG17    CLH17    CLJ17    CLK17    CLM17   CLN17
+       2017-01-03     2000     1000        5        0        0        0       0
+       2017-01-04     2000     1000        5        0        0        0       0
+           ...
+       2017-01-16     2000     1000        5        0        0        0       0
+       2017-01-17     2000     1000        5        0        0        0       0
+ACD -> 2017-01-18     2000_    1000        5        0        0        0       0
+       2017-01-19     2000 `-> 1000        5        0        0        0       0
+       2017-01-20     2000     1000        5        0        0        0       0
+       2017-01-23        0     1000        5        0        0        0       0
+           ...
+       2017-02-09        0     1000        5        0        0        0       0
+       2017-02-10        0     1000_    5000        0        0        0       0
+       2017-02-13        0     1000 `-> 5000        0        0        0       0
+       2017-02-14        0     1000     5000        0        0        0       0
+ACD -> 2017-02-15        0     1000     5000        0        0        0       0
+       2017-02-16        0     1000     5000        0        0        0       0
+       2017-02-17        0     1000     5000        0        0        0       0
+       2017-02-20        0        0     5000        0        0        0       0
+           ...
+       2017-03-10        0        0     5000        0        0        0       0
+       2017-03-13        0        0     5000     4000        0        0       0
+       2017-03-14        0        0     5000     4000        0        0       0
+ACD -> 2017-03-15        0        0     5000_    4000     3000        0       0
+       2017-03-16        0        0     5000 `-> 4000     3000        0       0
+       2017-03-17        0        0     5000     4000     3000        0       0
+       2017-03-20        0        0        0     4000     3000        0       0
+           ...
+       2017-04-14        0        0        0     4000     3000        0       0
+       2017-04-17        0        0        0     4000_    3000        0       0
+       2017-04-18        0        0        0        0 `-> 3000        0       0
+ACD -> 2017-04-19        0        0        0        0     3000     1000    2000
+       2017-04-20        0        0        0        0     3000     1000    2000
+       2017-04-21        0        0        0        0     3000     1000    2000
+           ...
+       2017-05-16        0        0        0        0     3000     1000    2000
+       2017-05-17        0        0        0        0     3000     1000    2000
+       2017-05-18        0        0        0        0     3000_    1000    2000
+ACD -> 2017-05-19        0        0        0        0     3000 `---1000--> 2000
+       2017-05-22        0        0        0        0     3000     1000    2000
+       2017-05-23        0        0        0        0     3000     1000    2000
 
         The first roll occurs because we reach the auto close date of CLF17.
         The second roll occurs because the volume of CLH17 overtakes CLG17.
@@ -1410,6 +1460,10 @@ class RollFinderTestCase(WithBcolzFutureDailyBarReader, ZiplineTestCase):
         period before CLH17's auto close date.
         The fourth roll is testing that we properly handle the case where a
         contract's auto close date is *after* its end date.
+        The fifth roll occurs on the auto close date of CLK17, but we skip over
+        CLM17 because of it's low volume, and roll directly to CLN17. This is
+        used to cover an edge case where the window passed to get_rolls end on
+        the auto close date of CLK17.
 
         A volume of zero here is used to represent the fact that a contract no
         longer exists.
@@ -1451,6 +1505,17 @@ class RollFinderTestCase(WithBcolzFutureDailyBarReader, ZiplineTestCase):
         # Make a copy because we are taking a slice of a data frame.
         fifth_contract_data = create_contract_data(3000)
         yield 1004, fifth_contract_data.copy().loc[cls.fifth_start_date:]
+
+        sixth_contract_data = create_contract_data(1000)
+        yield 1005, sixth_contract_data.copy().loc[cls.last_start_date:]
+
+        seventh_contract_data = create_contract_data(2000)
+        yield 1006, seventh_contract_data.copy().loc[cls.last_start_date:]
+
+        # The data for FV does not really matter except that contract 2000 has
+        # higher volume than contract 2001.
+        yield 2000, create_contract_data(200)
+        yield 2001, create_contract_data(100)
 
     def test_volume_roll(self):
         """
@@ -1511,7 +1576,7 @@ class RollFinderTestCase(WithBcolzFutureDailyBarReader, ZiplineTestCase):
         rolls = self.volume_roll_finder.get_rolls(
             root_symbol='CL',
             start=self.fourth_start_date,
-            end=self.END_DATE,
+            end=self.fourth_auto_close_date,
             offset=0,
         )
         self.assertEqual(
@@ -1521,6 +1586,59 @@ class RollFinderTestCase(WithBcolzFutureDailyBarReader, ZiplineTestCase):
                 (1003, pd.Timestamp('2017-04-18', tz='UTC')),
                 (1004, None),
             ],
+        )
+
+    def test_roll_window_ends_on_auto_close(self):
+        """
+        Test that when skipping over a low volume contract (CLM17), we use the
+        correct roll date for the previous contract (CLK17) when that
+        contract's auto close date falls on the end date of the roll window.
+        """
+        rolls = self.volume_roll_finder.get_rolls(
+            root_symbol='CL',
+            start=self.last_start_date,
+            end=self.fifth_auto_close_date,
+            offset=0,
+        )
+        self.assertEqual(
+            rolls,
+            [
+                (1003, pd.Timestamp('2017-04-18', tz='UTC')),
+                (1004, pd.Timestamp('2017-05-19', tz='UTC')),
+                (1006, None),
+            ],
+        )
+
+    def test_get_contract_center(self):
+        asset_finder = self.asset_finder
+        get_contract_center = partial(
+            self.volume_roll_finder.get_contract_center, offset=0,
+        )
+
+        # Test that the current contract adheres to the rolls.
+        self.assertEqual(
+            get_contract_center('CL', dt=pd.Timestamp('2017-01-18', tz='UTC')),
+            asset_finder.retrieve_asset(1000),
+        )
+        self.assertEqual(
+            get_contract_center('CL', dt=pd.Timestamp('2017-01-19', tz='UTC')),
+            asset_finder.retrieve_asset(1001),
+        )
+
+        # Test that we still get the correct current contract close to or at
+        # the max day boundary. Contracts 2000 and 2001 both have auto close
+        # dates after `self.END_DATE` so 2000 should always be the current
+        # contract. However, they do not have any volume data after this point
+        # so this test ensures that we do not fail to calculate the forward
+        # looking rolls required for `VolumeRollFinder.get_contract_center`.
+        near_end = self.END_DATE - self.trading_calendar.day
+        self.assertEqual(
+            get_contract_center('FV', dt=near_end),
+            asset_finder.retrieve_asset(2000),
+        )
+        self.assertEqual(
+            get_contract_center('FV', dt=self.END_DATE),
+            asset_finder.retrieve_asset(2000),
         )
 
 
